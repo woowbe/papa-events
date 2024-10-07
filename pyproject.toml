@@ -1,0 +1,51 @@
+[project]
+name = "papa-events"
+version = "0.1.0"
+description = "Libreria para gestion de eventos en python"
+readme = "README.md"
+requires-python = ">=3.11, <3.12"
+dependencies = [
+    "aio-pika>=9.4.3,<10.0.0",
+    "opentelemetry-sdk>=1.27.0",
+    "pydantic-settings>=2.5.2,<3.0.0",
+    "pydantic>=2.9.2,<3.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+dev-dependencies = [
+    "mypy>=1.11.2",
+    "pytest-asyncio>=0.24.0",
+    "pytest>=8.3.3",
+    "ruff>=0.6.8",
+    "testcontainers[rabbitmq]>=4.8.1",
+]
+
+[tool.ruff]
+line-length = 120
+include = ["pyproject.toml", "src/**/*.py"]
+
+[tool.ruff.lint]
+select = [
+    "E", # pycodestyle errors
+    "W", # pycodestyle warnings
+    "F", # pyflakes
+    "I", # isort
+    "B", # flake8-bugbear
+    "C4", # flake8-comprehensions
+    "UP", # pyupgrade
+    "ASYNC", # flake8-async
+    "S", # flake8-bandit
+    "DTZ", # flake8-datetimez
+    "SIM", # flake8-simplify
+]
+
+[tool.pytest.ini_options]
+addopts = [
+    "--import-mode=importlib",
+    "--asyncio-mode=auto",
+]
+
