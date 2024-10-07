@@ -1,0 +1,32 @@
+name: Pull request CI
+on:
+  pull_request:
+    branches:
+      - "master"
+jobs:
+  linting-format-testing:
+    name: "Check linting, formating and tests"
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "Set up uv"
+        run: curl -LsSf https://astral.sh/uv/0.4.18/install.sh | sh
+
+      - name: "Set up Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: ".python-version"
+
+      - name: "Install the project"
+        run: uv sync --all-extras --dev
+
+      - name: "Lint check"
+        run: uvx ruff check
+
+      - name: "Format check"
+        run: uvx ruff format --check
+
+      - name: "Run tests"
+        run: uv run --frozen pytest tests

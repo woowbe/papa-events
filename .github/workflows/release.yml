@@ -1,0 +1,26 @@
+name: "Release"
+on:
+  push:
+    branches:
+      - "master"
+jobs:
+  push-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Set up uv"
+        run: curl -LsSf https://astral.sh/uv/0.4.18/install.sh | sh
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Bump minor & push tag
+        run: |
+          NEW_VERSION=$(uvx bump --minor --reset pyproject.toml)
+          git config --global user.name 'Woowbe CI'
+          git config --global user.email 'info@woowbe.com'
+          git add pyproject.toml
+          git commit -m ":bookmark: New minor $NEW_VERSION"
+          git tag $NEW_VERSION
+          git push origin $NEW_VERSION
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
