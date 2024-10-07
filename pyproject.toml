@@ -1,6 +1,6 @@
 [project]
 name = "papa-events"
-version = "0.1.0"
+version = "0.1.1"
 description = "Libreria para gestion de eventos en python"
 readme = "README.md"
 requires-python = ">=3.11, <3.12"
@@ -20,7 +20,6 @@ dev-dependencies = [
     "mypy>=1.11.2",
     "pytest-asyncio>=0.24.0",
     "pytest>=8.3.3",
-    "ruff>=0.6.8",
     "testcontainers[rabbitmq]>=4.8.1",
 ]
 
