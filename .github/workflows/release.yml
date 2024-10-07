@@ -2,7 +2,7 @@ name: "Release"
 on:
   push:
     branches:
-      - "master"
+      - master
 jobs:
   push-tag:
     runs-on: ubuntu-latest
@@ -22,5 +22,6 @@ jobs:
           git commit -m ":bookmark: New minor $NEW_VERSION"
           git tag $NEW_VERSION
           git push origin $NEW_VERSION
+          git push origin master
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
