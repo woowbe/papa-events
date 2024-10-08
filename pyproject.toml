@@ -42,6 +42,10 @@ select = [
     "SIM", # flake8-simplify
 ]
 
+ignore = [
+    "E501",  # line too long, handled by ruff format
+]
+
 [tool.pytest.ini_options]
 addopts = [
     "--import-mode=importlib",

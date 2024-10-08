@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import signal
+import traceback
 from collections.abc import Callable
 from functools import partial
 from inspect import Signature, signature
@@ -8,22 +9,23 @@ from inspect import Signature, signature
 import aio_pika
 import pydantic
 from aio_pika import ExchangeType
+from aio_pika.abc import AbstractQueue, ConsumerTag
 from opentelemetry.propagate import extract, get_global_textmap
 from opentelemetry.trace import get_tracer_provider, set_span_in_context
 
 from .config import settings
 from .event import CallBack, UseCase
+from .exceptions import PapaException
 
 HANDLED_SIGNALS = (
     signal.SIGINT,  # Unix signal 2. Sent by Ctrl+C.
     signal.SIGTERM,  # Unix signal 15. Sent by `kill <pid>`.
 )
 
-logger = logging.getLogger(__name__)
-
 
 class PapaApp:
-    def __init__(self, broker_uri: str, max_jobs: int = settings.max_jobs):
+    def __init__(self, broker_uri: str, max_jobs: int = settings.max_jobs, logger: logging.Logger | None = None):
+        self.logger = logger if logger else logging.getLogger(__name__)
         self.broker_uri = broker_uri
         self.use_cases: dict[str, UseCase] = {}
         self.connection: aio_pika.abc.AbstractRobustConnection | None = None
@@ -31,22 +33,22 @@ class PapaApp:
         self.default_exchange: aio_pika.abc.AbstractExchange | None = None
         self.retry_exchange: aio_pika.abc.AbstractExchange | None = None
         self.dlq_exchange: aio_pika.abc.AbstractExchange | None = None
-        self.consumers = []
+        self.consumers: list[tuple[ConsumerTag, AbstractQueue]] = []
         self.max_jobs: int = max_jobs
         self.tracer = get_tracer_provider().get_tracer("papa-events")
 
     def on_event(self, event_names: list[str], use_case_name: str, retries: int = settings.retries) -> Callable:
         def decorator(func: Callable) -> Callable:
             if use_case_name in self.use_cases:
-                raise Exception(f"Ya tiene una funcion para el caso de uso <{use_case_name}>")
+                raise PapaException(f"Duplicate functions for <{use_case_name}>")
             sig = signature(func)
             kws = [
                 (name, parameter.annotation)
                 for name, parameter in sig.parameters.items()
                 if parameter.annotation not in [Signature.empty]
             ]
-            # if len(kws) != 1:
-            #     raise Exception("Tienes que tener un parametro con tipo para el evento")
+            if len(kws) != 1:
+                raise PapaException("You need one pydantic.BaseModel function param")
             param_name, param_model = kws[0]
             if use_case_name not in self.use_cases:
                 callback_config = CallBack(function=func, param_name=param_name, param_model=param_model)
@@ -62,16 +64,15 @@ class PapaApp:
         return decorator
 
     async def _job_processor(self, message: aio_pika.abc.AbstractIncomingMessage, use_case: UseCase) -> None:
-        if message.routing_key is None or self.dlq_exchange is None:
-            raise Exception("Init needed")
-        logger.warning(f"Procesando mensaje #{message.message_id} en {use_case.name}")
+        self.logger.warning(f"Processing message for {use_case.name} <{message.message_id}>")
         ctx = extract(message.headers)
         with self.tracer.start_as_current_span(f"consumer:{use_case.name}", context=ctx):
             try:
                 kwargs = {use_case.callback.param_name: use_case.callback.param_model.model_validate_json(message.body)}
                 await use_case.callback.function(**kwargs)
             except pydantic.ValidationError:
-                logger.error(f"Decode error, message #{ message.message_id } to DLQ")
+                self.logger.error(f"DLQ: pydantic.ValidationError error for {use_case.name} <{ message.message_id }>")
+                message.headers["exception"] = traceback.format_exc(chain=False)
                 await self.dlq_exchange.publish(message=message, routing_key=message.routing_key)
                 await message.ack()
             except Exception as exc:
@@ -79,13 +80,16 @@ class PapaApp:
                 if (
                     retried_times >= use_case.retries  # type: ignore
                 ):
-                    logger.error(f"Max retries ({ use_case.retries }) for message #{message.message_id} to DLQ")
-                    message.headers["exception"] = str(exc)
+                    self.logger.error(
+                        f"DLQ: Max retries ({ use_case.retries }) for {use_case.name} <{ message.message_id }>"
+                    )
+                    message.headers["exception"] = traceback.format_exc(chain=False)
                     await self.dlq_exchange.publish(message=message, routing_key=message.routing_key)
                     await message.ack()
                 else:
-                    logger.warning(
-                        f"Retry message {str(exc)} #{ message.message_id } @ { use_case.name } ({retried_times + 1})"
+                    self.logger.warning(
+                        f"RETRY: {retried_times + 1}/{use_case.retries} "
+                        f"for {use_case.name} <{ message.message_id }> exc: {str(exc)}"
                     )
                     await message.reject()
             else:
@@ -139,16 +143,16 @@ class PapaApp:
 
     async def stop(self) -> None:
         if self.connection is None:
-            raise Exception("Init needed")
+            raise PapaException("Init needed")
         async with asyncio.TaskGroup() as tg:
             for consumer, queue in self.consumers:
-                print(f"Parando cola {consumer}")
+                self.logger.info(f"Stopping tag {consumer}")
                 tg.create_task(queue.cancel(consumer))
         await self.connection.close()
 
     async def new_event(self, event_name: str, payload: bytes) -> None:
         if self.default_exchange is None:
-            raise Exception("Init needed")
+            raise PapaException("Init needed")
         headers: aio_pika.abc.HeadersType = {}
         with self.tracer.start_as_current_span(f"publisher:{event_name}") as current_span:
             propagator = get_global_textmap()
