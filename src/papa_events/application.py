@@ -1,17 +1,21 @@
 import asyncio
 import logging
 import signal
+import time
 import traceback
 from collections.abc import Callable
 from functools import partial
 from inspect import Signature, signature
 
 import aio_pika
+import asyncpg
 import pydantic
 from aio_pika import ExchangeType
 from aio_pika.abc import AbstractQueue, ConsumerTag
 from opentelemetry.propagate import extract, get_global_textmap
 from opentelemetry.trace import get_tracer_provider, set_span_in_context
+from pydantic import BaseModel
+from pydantic_core import to_json
 
 from .config import settings
 from .event import CallBack, UseCase
@@ -24,9 +28,16 @@ HANDLED_SIGNALS = (
 
 
 class PapaApp:
-    def __init__(self, broker_uri: str, max_jobs: int = settings.max_jobs, logger: logging.Logger | None = None):
+    def __init__(
+        self,
+        broker_uri: str,
+        failover_uri: str,
+        max_jobs: int = settings.max_jobs,
+        logger: logging.Logger | None = None,
+    ):
         self.logger = logger if logger else logging.getLogger(__name__)
         self.broker_uri = broker_uri
+        self.failover_uri = failover_uri
         self.use_cases: dict[str, UseCase] = {}
         self.connection: aio_pika.abc.AbstractRobustConnection | None = None
         self.channel: aio_pika.abc.AbstractChannel | None = None
@@ -64,14 +75,16 @@ class PapaApp:
         return decorator
 
     async def _job_processor(self, message: aio_pika.abc.AbstractIncomingMessage, use_case: UseCase) -> None:
-        self.logger.warning(f"Processing message for {use_case.name} <{message.message_id}>")
+        self.logger.info(f"Processing message for {use_case.name} <{message.message_id}>")
         ctx = extract(message.headers)
         with self.tracer.start_as_current_span(f"consumer:{use_case.name}", context=ctx):
             try:
                 kwargs = {use_case.callback.param_name: use_case.callback.param_model.model_validate_json(message.body)}
                 await use_case.callback.function(**kwargs)
             except pydantic.ValidationError:
-                self.logger.error(f"DLQ: pydantic.ValidationError error for {use_case.name} <{ message.message_id }>")
+                self.logger.exception(
+                    f"DLQ: pydantic.ValidationError error for {use_case.name} <{ message.message_id }>"
+                )
                 message.headers["exception"] = traceback.format_exc(chain=False)
                 await self.dlq_exchange.publish(message=message, routing_key=message.routing_key)
                 await message.ack()
@@ -80,7 +93,7 @@ class PapaApp:
                 if (
                     retried_times >= use_case.retries  # type: ignore
                 ):
-                    self.logger.error(
+                    self.logger.exception(
                         f"DLQ: Max retries ({ use_case.retries }) for {use_case.name} <{ message.message_id }>"
                     )
                     message.headers["exception"] = traceback.format_exc(chain=False)
@@ -97,6 +110,19 @@ class PapaApp:
 
     async def start(self) -> None:
         self.connection = await aio_pika.connect_robust(self.broker_uri)
+        self.failover_pool = await asyncpg.create_pool(dsn=self.failover_uri)
+        async with self.failover_pool.acquire() as connection:
+            await connection.execute("""
+                CREATE TABLE IF NOT EXISTS rabbitmq_failover(
+                    id serial PRIMARY KEY,
+                    timestamp int,
+                    message_id text NULL,
+                    exchange text,
+                    routing_key text,
+                    body jsonb,
+                    headers jsonb
+                );
+            """)
         self.channel = await self.connection.channel()
         await self.channel.set_qos(prefetch_count=self.max_jobs)
         self.default_exchange = await self.channel.declare_exchange(name="domain_events", type=ExchangeType.TOPIC)
@@ -150,14 +176,31 @@ class PapaApp:
                 tg.create_task(queue.cancel(consumer))
         await self.connection.close()
 
-    async def new_event(self, event_name: str, payload: bytes) -> None:
+    async def new_event(self, event_name: str, payload: bytes | BaseModel) -> None:
         if self.default_exchange is None:
             raise PapaException("Init needed")
-        headers: aio_pika.abc.HeadersType = {}
+        if isinstance(payload, BaseModel):
+            payload = payload.model_dump_json().encode()
+        message = aio_pika.Message(body=payload)
         with self.tracer.start_as_current_span(f"publisher:{event_name}") as current_span:
             propagator = get_global_textmap()
             if propagator:
-                propagator.inject(headers, set_span_in_context(current_span))
-            await self.default_exchange.publish(
-                message=aio_pika.Message(body=payload, headers=headers), routing_key=event_name
-            )
+                propagator.inject(message.headers, set_span_in_context(current_span))
+            try:
+                await self.default_exchange.publish(message=message, routing_key=event_name)
+            except Exception:
+                self.logger.exception("Domain event in failover mode")
+                async with self.failover_pool.acquire() as connection:
+                    # Open a transaction.
+                    await connection.execute(
+                        """
+                        INSERT INTO rabbitmq_failover(timestamp, message_id, exchange, routing_key, body, headers)
+                        VALUES ($1, $2, $3, $4, $5, $6);
+                    """,
+                        time.time(),
+                        message.message_id if message.message_id else None,
+                        self.default_exchange.name,
+                        event_name,
+                        message.body.decode(),
+                        to_json(message.headers).decode(),
+                    )
