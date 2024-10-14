@@ -18,6 +18,7 @@ build-backend = "hatchling.build"
 
 [tool.uv]
 dev-dependencies = [
+    "coverage>=7.6.3",
     "mypy>=1.11.2",
     "pytest-asyncio>=0.24.0",
     "pytest>=8.3.3",
@@ -52,4 +53,4 @@ addopts = [
     "--import-mode=importlib",
     "--asyncio-mode=auto",
 ]
-
+asyncio_default_fixture_loop_scope="function"
