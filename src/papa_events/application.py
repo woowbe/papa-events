@@ -18,7 +18,7 @@ from pydantic import BaseModel
 from pydantic_core import to_json
 
 from .config import settings
-from .event import CallBack, UseCase
+from .event import CallBack, OutputEvent, UseCase
 from .exceptions import PapaException
 
 HANDLED_SIGNALS = (
@@ -31,13 +31,14 @@ class PapaApp:
     def __init__(
         self,
         broker_uri: str,
-        failover_uri: str,
+        failover_uri: str | None = None,
         max_jobs: int = settings.max_jobs,
         logger: logging.Logger | None = None,
     ):
         self.logger = logger if logger else logging.getLogger(__name__)
         self.broker_uri = broker_uri
         self.failover_uri = failover_uri
+        self.failover_pool = None
         self.use_cases: dict[str, UseCase] = {}
         self.connection: aio_pika.abc.AbstractRobustConnection | None = None
         self.channel: aio_pika.abc.AbstractChannel | None = None
@@ -47,6 +48,7 @@ class PapaApp:
         self.consumers: list[tuple[ConsumerTag, AbstractQueue]] = []
         self.max_jobs: int = max_jobs
         self.tracer = get_tracer_provider().get_tracer("papa-events")
+        self.opentelemetry_propagator = get_global_textmap()
 
     def on_event(self, event_names: list[str], use_case_name: str, retries: int = settings.retries) -> Callable:
         def decorator(func: Callable) -> Callable:
@@ -75,24 +77,27 @@ class PapaApp:
         return decorator
 
     async def _job_processor(self, message: aio_pika.abc.AbstractIncomingMessage, use_case: UseCase) -> None:
-        self.logger.info(f"Processing message for {use_case.name} <{message.message_id}>")
         ctx = extract(message.headers)
-        with self.tracer.start_as_current_span(f"consumer:{use_case.name}", context=ctx):
+        with self.tracer.start_as_current_span(f"consumer:{use_case.name}", context=ctx) as current_span:
+            self.logger.info(f"Processing message for {use_case.name} <{message.message_id}>")
+            # Cast the message body to event model
             try:
                 kwargs = {use_case.callback.param_name: use_case.callback.param_model.model_validate_json(message.body)}
-                await use_case.callback.function(**kwargs)
             except pydantic.ValidationError:
                 self.logger.exception(
-                    f"DLQ: pydantic.ValidationError error for {use_case.name} <{ message.message_id }>"
+                    f"DLQ: The model for {use_case.name} do not validate for incoming message <{ message.message_id }>"
                 )
                 message.headers["exception"] = traceback.format_exc(chain=False)
                 await self.dlq_exchange.publish(message=message, routing_key=message.routing_key)
                 await message.ack()
+                return
+
+            # Execute the function with the custom event model
+            try:
+                response: list | None = await use_case.callback.function(**kwargs)
             except Exception as exc:
                 retried_times: int = message.headers.get("x-delivery-count", 0)
-                if (
-                    retried_times >= use_case.retries  # type: ignore
-                ):
+                if retried_times >= use_case.retries:
                     self.logger.exception(
                         f"DLQ: Max retries ({ use_case.retries }) for {use_case.name} <{ message.message_id }>"
                     )
@@ -105,24 +110,47 @@ class PapaApp:
                         f"for {use_case.name} <{ message.message_id }> exc: {str(exc)}"
                     )
                     await message.reject()
-            else:
-                await message.ack()
+                return
+
+            # Prepare response for publishing
+            try:
+                response_events = [OutputEvent.model_validate(item) for item in response] if response else []
+            except pydantic.ValidationError:
+                self.logger.exception(
+                    f"DLQ: pydantic.ValidationError output event error for {use_case.name} <{ message.message_id }>"
+                )
+                message.headers["exception"] = traceback.format_exc(chain=False)
+                await self.dlq_exchange.publish(message=message, routing_key=message.routing_key)
+                return
+
+            # Publish events
+            if response_events:
+                async with asyncio.TaskGroup() as tg:
+                    for event in response_events:
+                        output_event = aio_pika.Message(body=event.payload)
+                        if self.opentelemetry_propagator:
+                            self.opentelemetry_propagator.inject(
+                                output_event.headers, set_span_in_context(current_span)
+                            )
+                        tg.create_task(self.default_exchange.publish(message=output_event, routing_key=event.name))
+            await message.ack()
 
     async def start(self) -> None:
         self.connection = await aio_pika.connect_robust(self.broker_uri)
-        self.failover_pool = await asyncpg.create_pool(dsn=self.failover_uri)
-        async with self.failover_pool.acquire() as connection:
-            await connection.execute("""
-                CREATE TABLE IF NOT EXISTS rabbitmq_failover(
-                    id serial PRIMARY KEY,
-                    timestamp int,
-                    message_id text NULL,
-                    exchange text,
-                    routing_key text,
-                    body jsonb,
-                    headers jsonb
-                );
-            """)
+        if self.failover_uri:
+            self.failover_pool = await asyncpg.create_pool(dsn=self.failover_uri)
+            async with self.failover_pool.acquire() as connection:
+                await connection.execute("""
+                    CREATE TABLE IF NOT EXISTS rabbitmq_failover(
+                        id serial PRIMARY KEY,
+                        timestamp int,
+                        message_id text NULL,
+                        exchange text,
+                        routing_key text,
+                        body jsonb,
+                        headers jsonb
+                    );
+                """)
         self.channel = await self.connection.channel()
         await self.channel.set_qos(prefetch_count=self.max_jobs)
         self.default_exchange = await self.channel.declare_exchange(name="domain_events", type=ExchangeType.TOPIC)
@@ -146,7 +174,7 @@ class PapaApp:
                 durable=True,
                 arguments={
                     "x-dead-letter-exchange": "domain_events",
-                    "x-message-ttl": 10000,
+                    "x-message-ttl": settings.timeout * 1000,
                     "x-dead-letter-routing-key": use_case,
                     "x-queue-type": "quorum",
                 },
@@ -174,6 +202,7 @@ class PapaApp:
             for consumer, queue in self.consumers:
                 self.logger.info(f"Stopping tag {consumer}")
                 tg.create_task(queue.cancel(consumer))
+        await self.failover_pool.close()
         await self.connection.close()
 
     async def new_event(self, event_name: str, payload: bytes | BaseModel) -> None:
@@ -183,24 +212,24 @@ class PapaApp:
             payload = payload.model_dump_json().encode()
         message = aio_pika.Message(body=payload)
         with self.tracer.start_as_current_span(f"publisher:{event_name}") as current_span:
-            propagator = get_global_textmap()
-            if propagator:
-                propagator.inject(message.headers, set_span_in_context(current_span))
+            if self.opentelemetry_propagator:
+                self.opentelemetry_propagator.inject(message.headers, set_span_in_context(current_span))
             try:
                 await self.default_exchange.publish(message=message, routing_key=event_name)
             except Exception:
-                self.logger.exception("Domain event in failover mode")
-                async with self.failover_pool.acquire() as connection:
-                    # Open a transaction.
-                    await connection.execute(
-                        """
-                        INSERT INTO rabbitmq_failover(timestamp, message_id, exchange, routing_key, body, headers)
-                        VALUES ($1, $2, $3, $4, $5, $6);
-                    """,
-                        time.time(),
-                        message.message_id if message.message_id else None,
-                        self.default_exchange.name,
-                        event_name,
-                        message.body.decode(),
-                        to_json(message.headers).decode(),
-                    )
+                self.logger.exception("Domain events in failover mode")
+                if self.failover_pool:
+                    async with self.failover_pool.acquire() as connection:
+                        # Open a transaction.
+                        await connection.execute(
+                            """
+                            INSERT INTO rabbitmq_failover(timestamp, message_id, exchange, routing_key, body, headers)
+                            VALUES ($1, $2, $3, $4, $5, $6);
+                        """,
+                            time.time(),
+                            message.message_id if message.message_id else None,
+                            self.default_exchange.name,
+                            event_name,
+                            message.body.decode(),
+                            to_json(message.headers).decode(),
+                        )
