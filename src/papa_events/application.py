@@ -89,7 +89,7 @@ class PapaApp:
                     f"DLQ: The model for {use_case.name} do not validate for incoming message <{ message.message_id }>"
                 )
                 message.headers["exception"] = traceback.format_exc(chain=False)
-                await self.dlq_exchange.publish(message=message, routing_key=message.routing_key)
+                await self.dlq_exchange.publish(message=message, routing_key=use_case.name)
                 await message.ack()
                 return
 
@@ -103,7 +103,7 @@ class PapaApp:
                         f"DLQ: Max retries ({ use_case.retries }) for {use_case.name} <{ message.message_id }>"
                     )
                     message.headers["exception"] = traceback.format_exc(chain=False)
-                    await self.dlq_exchange.publish(message=message, routing_key=message.routing_key)
+                    await self.dlq_exchange.publish(message=message, routing_key=use_case.name)
                     await message.ack()
                 else:
                     self.logger.warning(
@@ -121,7 +121,7 @@ class PapaApp:
                     f"DLQ: pydantic.ValidationError output event error for {use_case.name} <{ message.message_id }>"
                 )
                 message.headers["exception"] = traceback.format_exc(chain=False)
-                await self.dlq_exchange.publish(message=message, routing_key=message.routing_key)
+                await self.dlq_exchange.publish(message=message, routing_key=use_case.name)
                 response_events = []
 
             # Publish events
