@@ -60,7 +60,8 @@ class PapaApp:
                 for name, parameter in sig.parameters.items()
                 if parameter.annotation not in [Signature.empty]
             ]
-            if len(kws) != 1:
+            # Only allow one BaseModel instance for event
+            if len(kws) != 1 or not issubclass(kws[0][1], pydantic.BaseModel):
                 raise PapaException("You need one pydantic.BaseModel function param")
             param_name, param_model = kws[0]
             if use_case_name not in self.use_cases:
@@ -121,7 +122,7 @@ class PapaApp:
                 )
                 message.headers["exception"] = traceback.format_exc(chain=False)
                 await self.dlq_exchange.publish(message=message, routing_key=message.routing_key)
-                return
+                response_events = []
 
             # Publish events
             if response_events:
@@ -202,7 +203,8 @@ class PapaApp:
             for consumer, queue in self.consumers:
                 self.logger.info(f"Stopping tag {consumer}")
                 tg.create_task(queue.cancel(consumer))
-        await self.failover_pool.close()
+        if self.failover_pool:
+            await self.failover_pool.close()
         await self.connection.close()
 
     async def new_event(self, event_name: str, payload: bytes | BaseModel) -> None:
