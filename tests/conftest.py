@@ -1,4 +1,5 @@
 import pytest
+from testcontainers.postgres import PostgresContainer
 from testcontainers.rabbitmq import RabbitMqContainer
 
 from papa_events import config
@@ -10,6 +11,12 @@ def rabbitmq_container():
     config.settings.timeout = 1
     with RabbitMqContainer("rabbitmq:4") as rabbitmq:
         yield rabbitmq
+
+
+@pytest.fixture(scope="session")
+def postgres_container():
+    with PostgresContainer("postgres:12.19", username="test", password="test", dbname="test") as postgres:
+        yield postgres
 
 
 @pytest.fixture(scope="function")
