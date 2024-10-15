@@ -4,7 +4,7 @@ from typing import Any
 
 import pydantic
 from pydantic import model_validator
-from pydantic_core import to_json
+from pydantic_core import PydanticSerializationError, to_json
 
 
 @dataclass
@@ -35,6 +35,8 @@ class OutputEvent(pydantic.BaseModel):
             elif isinstance(data["payload"], dict):
                 try:
                     data["payload"] = to_json(data["payload"])
-                except pydantic.ValidationError as exc:
+                except PydanticSerializationError as exc:
                     raise ValueError("payload is not JSONable") from exc
+            else:
+                raise ValueError("payload must be jsonable object")
         return data
