@@ -1,1 +1,1 @@
-from .application import PapaApp
+from .application import PapaApp as PapaApp
