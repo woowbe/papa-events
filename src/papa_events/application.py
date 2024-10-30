@@ -58,7 +58,7 @@ class PapaApp:
             kws = [
                 (name, parameter.annotation)
                 for name, parameter in sig.parameters.items()
-                if parameter.annotation not in [Signature.empty]
+                if parameter.annotation not in [Signature.empty] and issubclass(parameter.annotation, BaseModel)
             ]
             # Only allow one BaseModel instance for event
             if len(kws) != 1 or not issubclass(kws[0][1], pydantic.BaseModel):
