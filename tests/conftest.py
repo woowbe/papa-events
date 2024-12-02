@@ -15,7 +15,7 @@ def rabbitmq_container():
 
 @pytest.fixture(scope="session")
 def postgres_container():
-    with PostgresContainer("postgres:12.19", username="test", password="test", dbname="test") as postgres:
+    with PostgresContainer("postgres:17.2", username="test", password="test", dbname="test") as postgres:
         yield postgres
 
 

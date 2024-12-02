@@ -63,6 +63,10 @@ class PapaApp:
             # Only allow one BaseModel instance for event
             if len(kws) != 1 or not issubclass(kws[0][1], pydantic.BaseModel):
                 raise PapaException("You need one pydantic.BaseModel function param")
+            has_name_param = any(True for name, parameter in sig.parameters.items() if name == "event_name")
+            # event_name is needed
+            if not has_name_param:
+                raise PapaException("You need one 'event_name' function param")
             param_name, param_model = kws[0]
             if use_case_name not in self.use_cases:
                 callback_config = CallBack(function=func, param_name=param_name, param_model=param_model)
@@ -83,7 +87,10 @@ class PapaApp:
             self.logger.info(f"Processing message for {use_case.name} <{message.message_id}>")
             # Cast the message body to event model
             try:
-                kwargs = {use_case.callback.param_name: use_case.callback.param_model.model_validate_json(message.body)}
+                kwargs = {
+                    use_case.callback.param_name: use_case.callback.param_model.model_validate_json(message.body),
+                    "event_name": message.routing_key,
+                }
             except pydantic.ValidationError:
                 self.logger.exception(
                     f"DLQ: The model for {use_case.name} do not validate for incoming message <{ message.message_id }>"

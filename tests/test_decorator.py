@@ -26,8 +26,15 @@ async def test_wrong_event_param(app):
 
 
 @pytest.mark.asyncio
-async def test_duplicate_event(app):
+async def test_missing_event_name_param(app):
     async def wrong_callback(event: Event): ...
+
+    with pytest.raises(PapaException, match=r"You need one 'event_name' function param"):
+        app.on_event(["test_event.new"], "test_event_use_case")(wrong_callback)
+
+@pytest.mark.asyncio
+async def test_duplicate_event(app):
+    async def wrong_callback(event_name, event: Event): ...
 
     with pytest.raises(PapaException, match=r"^Duplicate functions for"):
         app.on_event(["test_event.new"], "test_event_use_case")(wrong_callback)
