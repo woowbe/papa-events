@@ -14,7 +14,7 @@ class Event(pydantic.BaseModel):
 
 @pytest.mark.asyncio
 async def test_simple_event(app):
-    async def welcome_email(event: Event): ...
+    async def welcome_email(event_name, event: Event): ...
 
     mocked_callback = create_autospec(welcome_email)
 
@@ -29,14 +29,14 @@ async def test_simple_event(app):
 
     mocked_callback.assert_awaited()
     assert mocked_callback.call_count == 2
-    mocked_callback.assert_called_with(event=ev)
+    mocked_callback.assert_called_with(event_name="user.created", event=ev)
 
 
 @pytest.mark.asyncio
 async def test_multiple_events(app):
-    async def welcome_email(event: Event): ...
+    async def welcome_email(event_name, event: Event): ...
 
-    async def register_analitics(event: Event): ...
+    async def register_analitics(event_name, event: Event): ...
 
     mocked_callback1 = create_autospec(welcome_email)
     mocked_callback2 = create_autospec(register_analitics)
@@ -51,15 +51,15 @@ async def test_multiple_events(app):
     await app.stop()
 
     mocked_callback1.assert_awaited()
-    mocked_callback1.assert_called_once_with(event=ev)
+    mocked_callback1.assert_called_once_with(event_name="user.created", event=ev)
 
     mocked_callback2.assert_awaited()
-    mocked_callback2.assert_called_once_with(event=ev)
+    mocked_callback2.assert_called_once_with(event_name="user.created", event=ev)
 
 
 @pytest.mark.asyncio
 async def test_retry_event(app):
-    async def welcome_email(event: Event): ...
+    async def welcome_email(event_name, event: Event): ...
 
     mocked_callback = create_autospec(welcome_email)
     mocked_callback.side_effect = [KeyError("foo"), None]
@@ -77,7 +77,7 @@ async def test_retry_event(app):
 
 @pytest.mark.asyncio
 async def test_dlq_max_retries_event(app):
-    async def welcome_email(event: Event): ...
+    async def welcome_email(event_name, event: Event): ...
 
     retries = 3
     mocked_callback = create_autospec(welcome_email)
@@ -104,7 +104,7 @@ async def test_dlq_max_retries_event(app):
 
 @pytest.mark.asyncio
 async def test_dlq_wrong_cast_event(app):
-    async def welcome_email(event: Event): ...
+    async def welcome_email(event_name, event: Event): ...
 
     mocked_callback = create_autospec(welcome_email)
 

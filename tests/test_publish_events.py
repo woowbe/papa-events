@@ -14,14 +14,14 @@ class Event(pydantic.BaseModel):
 
 @pytest.mark.asyncio
 async def test_publish_event(app):
-    async def welcome_email(event: Event): ...
+    async def welcome_email(event_name, event: Event): ...
 
     class CustomEvent(BaseModel):
         user: int
 
     ev2 = CustomEvent(user=999)
 
-    async def activate_account(event: CustomEvent): ...
+    async def activate_account(event_name, event: CustomEvent): ...
 
     mocked_callback = create_autospec(welcome_email)
     mocked_callback.return_value = [
@@ -40,21 +40,21 @@ async def test_publish_event(app):
     await app.stop()
 
     mocked_callback.assert_awaited()
-    mocked_callback.assert_called_once_with(event=ev)
+    mocked_callback.assert_called_once_with(event_name="user.created", event=ev)
 
     mocked_callback2.assert_awaited()
-    mocked_callback2.assert_called_with(event=ev2)
+    mocked_callback2.assert_called_with(event_name="email.sended", event=ev2)
     assert mocked_callback2.call_count == 2
 
 
 @pytest.mark.asyncio
 async def test_publish_event_no_object(app):
-    async def welcome_email(event: Event): ...
+    async def welcome_email(event_name, event: Event): ...
 
     class CustomEvent(BaseModel):
         user: int
 
-    async def activate_account(event: CustomEvent): ...
+    async def activate_account(event_name, event: CustomEvent): ...
 
     mocked_callback = create_autospec(welcome_email)
     mocked_callback.return_value = [
@@ -79,19 +79,19 @@ async def test_publish_event_no_object(app):
 
     mocked_callback.assert_awaited()
     assert "payload must be jsonable object" in message.headers["exception"]
-    mocked_callback.assert_called_once_with(event=ev)
+    mocked_callback.assert_called_once_with(event_name="user.created", event=ev)
 
     assert mocked_callback2.call_count == 0
 
 
 @pytest.mark.asyncio
 async def test_publish_event_no_jsonable(app):
-    async def welcome_email(event: Event): ...
+    async def welcome_email(event_name, event: Event): ...
 
     class CustomEvent(BaseModel):
         user: int
 
-    async def activate_account(event: CustomEvent): ...
+    async def activate_account(event_name, event: CustomEvent): ...
 
     class NOJSONABLE: ...
 
@@ -119,5 +119,5 @@ async def test_publish_event_no_jsonable(app):
 
     mocked_callback.assert_awaited()
     assert "payload is not JSONable" in message.headers["exception"]
-    mocked_callback.assert_called_once_with(event=ev)
+    mocked_callback.assert_called_once_with(event_name="user.created", event=ev)
     assert mocked_callback2.call_count == 0
