@@ -12,6 +12,7 @@ import asyncpg
 import pydantic
 from aio_pika import ExchangeType
 from aio_pika.abc import AbstractQueue, ConsumerTag
+from opentelemetry import trace
 from opentelemetry.instrumentation.aio_pika import AioPikaInstrumentor
 from pydantic import BaseModel
 from pydantic_core import to_json
@@ -81,7 +82,10 @@ class PapaApp:
         return decorator
 
     async def _job_processor(self, message: aio_pika.abc.AbstractIncomingMessage, use_case: UseCase) -> None:
-        self.logger.info(f"Processing message for {use_case.name} <{message.message_id}>")
+        retried_times: int = message.headers.get("x-delivery-count", 0)
+        current_span = trace.get_current_span()
+        current_span.set_attribute("papa_events.use_case", use_case.name)
+        current_span.set_attribute("papa_events.retry", retried_times)
         # Cast the message body to event model
         try:
             kwargs = {
@@ -101,7 +105,6 @@ class PapaApp:
         try:
             response: list | None = await use_case.callback.function(**kwargs)
         except Exception as exc:
-            retried_times: int = message.headers.get("x-delivery-count", 0)
             if retried_times >= use_case.retries:
                 self.logger.exception(
                     f"DLQ: Max retries ({use_case.retries}) for {use_case.name} <{message.message_id}>"
