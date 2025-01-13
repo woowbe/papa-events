@@ -82,7 +82,10 @@ class PapaApp:
         return decorator
 
     async def _job_processor(self, message: aio_pika.abc.AbstractIncomingMessage, use_case: UseCase) -> None:
-        retried_times: int = message.headers.get("x-delivery-count", 0)
+        # retried_times: int = message.headers.get("x-delivery-count", 0) # rabbitmq 4
+        retried_times = 0
+        if message.headers.get("x-death", False) and len(message.headers.get("x-death")):
+            retried_times = message.headers.get("x-death")[0].get("count", 0)
         current_span = trace.get_current_span()
         current_span.set_attribute("papa_events.use_case", use_case.name)
         current_span.set_attribute("papa_events.retry", retried_times)
