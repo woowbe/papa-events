@@ -160,9 +160,15 @@ class PapaApp:
                 """)
         self.channel = await self.connection.channel()
         await self.channel.set_qos(prefetch_count=self.max_jobs)
-        self.default_exchange = await self.channel.declare_exchange(name="domain_events", type=ExchangeType.TOPIC)
-        self.retry_exchange = await self.channel.declare_exchange(name="domain_events.retry", type=ExchangeType.DIRECT)
-        self.dlq_exchange = await self.channel.declare_exchange(name="domain_events.dlq", type=ExchangeType.DIRECT)
+        self.default_exchange = await self.channel.declare_exchange(
+            name="domain_events", type=ExchangeType.TOPIC, durable=True
+        )
+        self.retry_exchange = await self.channel.declare_exchange(
+            name="domain_events.retry", type=ExchangeType.DIRECT, durable=True
+        )
+        self.dlq_exchange = await self.channel.declare_exchange(
+            name="domain_events.dlq", type=ExchangeType.DIRECT, durable=True
+        )
         for use_case in self.use_cases:
             default_queue = await self.channel.declare_queue(
                 name=use_case,
