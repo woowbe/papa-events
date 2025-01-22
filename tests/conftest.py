@@ -9,7 +9,7 @@ from papa_events.application import PapaApp
 @pytest.fixture(scope="session")
 def rabbitmq_container():
     config.settings.timeout = 1
-    with RabbitMqContainer("rabbitmq:4" if config.settings.rabbitmq_version == 4 else "rabbitmq:3") as rabbitmq:
+    with RabbitMqContainer(f"rabbitmq:{config.settings.rabbitmq_version}") as rabbitmq:
         yield rabbitmq
 
 
